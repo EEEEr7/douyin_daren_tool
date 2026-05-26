@@ -8,12 +8,14 @@ from pathlib import Path
 
 
 def _prepare_runtime() -> None:
-    if getattr(sys, "frozen", False):
-        root = Path(sys.executable).resolve().parent
-        os.chdir(root)
-        bundled_browsers = root / "ms-playwright"
-        if bundled_browsers.exists():
-            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundled_browsers)
+    if not getattr(sys, "frozen", False):
+        return
+
+    root = Path(sys.executable).resolve().parent
+    os.chdir(root)
+    # 全程使用系统 Edge，不依赖打包的 Chromium
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
+    os.environ.setdefault("PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS", "1")
 
 
 def main() -> None:

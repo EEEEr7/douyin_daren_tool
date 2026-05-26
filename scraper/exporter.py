@@ -9,24 +9,14 @@ import config
 from scraper.daily_quota import session_label_cn
 from scraper.daren_profile import DarenContact
 
-HEADERS = ["达人昵称", "UID", "微信号", "粉丝数", "主页链接", "抓取时间", "备注", "时段"]
+HEADERS = ["达人昵称", "微信号"]
 
 
-def _contact_to_row(contact: DarenContact, session_label: str = "") -> list:
-    return [
-        contact.name,
-        contact.uid,
-        contact.wechat or "",
-        contact.fans_count,
-        contact.profile_url,
-        datetime.now().isoformat(timespec="seconds"),
-        contact.error,
-        session_label,
-    ]
+def _contact_to_row(contact: DarenContact) -> list:
+    return [contact.name, contact.wechat or ""]
 
 
 def run_output_dir(session_label: str = "") -> Path:
-    """结果目录：YYYYMMDD_HHMM_上午|下午|晚上"""
     period = session_label_cn(session_label or "auto")
     folder_name = f"{config.APP_BRAND}_{datetime.now().strftime('%Y%m%d_%H%M')}_{period}"
     folder = config.OUTPUT_DIR / folder_name
@@ -44,7 +34,9 @@ def export_to_excel(contacts: list[DarenContact], *, session_label: str = "") ->
     sheet.append(HEADERS)
 
     for contact in contacts:
-        sheet.append(_contact_to_row(contact, session_label))
+        if not contact.wechat:
+            continue
+        sheet.append(_contact_to_row(contact))
 
     for column in sheet.columns:
         max_length = 0

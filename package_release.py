@@ -66,16 +66,20 @@ def package() -> Path:
     _ensure_exe()
     shutil.copy2(ROOT / config.APP_EXE_NAME, PACKAGE_DIR / config.APP_EXE_NAME)
 
-    for name in ("启动.bat", "创建桌面快捷方式.bat", "使用说明.txt"):
+    for name in ("启动.bat", "启动Edge.bat", "创建桌面快捷方式.bat", "使用说明.txt"):
         shutil.copy2(TEMPLATE / name, PACKAGE_DIR / name)
+
+    for name in ("使用说明书.md", "使用说明书.txt"):
+        src = ROOT / name
+        if src.exists():
+            shutil.copy2(src, PACKAGE_DIR / name)
 
     (PACKAGE_DIR / "data").mkdir(exist_ok=True)
     (PACKAGE_DIR / "output").mkdir(exist_ok=True)
     (PACKAGE_DIR / "data" / ".gitkeep").write_text("", encoding="utf-8")
     (PACKAGE_DIR / "output" / ".gitkeep").write_text("", encoding="utf-8")
 
-    print("[打包] 复制 Chromium 浏览器（约 700MB，需等待）...")
-    _copy_browsers(PACKAGE_DIR)
+    print("[打包] 使用系统 Edge，无需复制 Chromium（体积更小）...")
 
     print("[打包] 压缩 zip...")
     if ZIP_PATH.exists():

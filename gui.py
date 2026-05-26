@@ -12,13 +12,11 @@ import config
 from main import parse_args, run_scraper
 from scraper.auth import (
     close_session,
-    has_saved_auth,
+    ensure_edge_cdp_ready,
+    is_edge_cdp_available,
     is_logged_in,
     launch_session,
-    manual_login,
-    save_auth_state,
 )
-from scraper.browser_cookies import sync_auth_from_system_browsers
 from scraper.progress import CallbackProgress, ProgressState
 
 SESSION_LABELS = {
@@ -131,16 +129,29 @@ class ScraperApp:
         self.session_var = tk.StringVar(value=self.default_args.session)
         self.relogin_var = tk.BooleanVar(value=self.default_args.relogin)
 
-        self.daily_var = tk.StringVar(value=f"今日进度  0 / {config.DAILY_TARGET}")
         self.session_var_text = tk.StringVar(value="本次进度  0 / 0")
         self.status_var = tk.StringVar(value="就绪")
+        self.eta_var = tk.StringVar(value="预估时间：-")
         self.current_var = tk.StringVar(value="当前达人：-")
         self.auth_var = tk.StringVar(value="检查登录状态中...")
 
         self._setup_styles()
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._log_startup()
         self.root.after(100, self._refresh_auth_status)
+
+    def _log_startup(self) -> None:
+        from scraper.time_estimate import filter_summary
+
+        self._append_log(f"—— {config.APP_FULL_NAME} {config.APP_VERSION} 已启动 ——")
+        self._append_log(f"采集条件：{filter_summary()} · 凑满 {config.SESSION_TARGET} 条即停")
+        self._append_log(f"Edge 调试地址：{config.EDGE_CDP_URL}")
+        if is_edge_cdp_available():
+            self._append_log("Edge 已连接，可直接点「开始采集」")
+        else:
+            self._append_log("尚未连接 Edge：请先在 Edge 登录百应，再点「连接 Edge」")
+        self._append_log("—— 等待操作 ——")
 
     def _setup_styles(self) -> None:
         style = ttk.Style()
@@ -231,12 +242,12 @@ class ScraperApp:
         self.auth_badge = ttk.Label(auth_row, textvariable=self.auth_var, style="AuthWarn.TLabel", padding=(10, 6))
         self.auth_badge.pack(side="left")
 
-        ttk.Button(auth_row, text="从浏览器导入", style="Secondary.TButton", command=self.import_auth).pack(side="right", padx=(6, 0))
-        ttk.Button(auth_row, text="浏览器内登录", style="Secondary.TButton", command=self.browser_login).pack(side="right", padx=(6, 0))
+        ttk.Button(auth_row, text="检查连接", style="Secondary.TButton", command=self.check_auth).pack(side="right", padx=(6, 0))
+        ttk.Button(auth_row, text="连接 Edge", style="Secondary.TButton", command=self.connect_edge).pack(side="right", padx=(6, 0))
 
         ttk.Label(
             auth_card,
-            text="先在 Chrome 或 Edge 登录 buyin.jinritemai.com，再点「从浏览器导入」；或直接「浏览器内登录」。",
+            text="请先在 Edge 登录 buyin.jinritemai.com（百应/精选联盟，不是抖店 fxg）。然后点「连接 Edge」：程序会短暂重启 Edge 以建立连接，您的登录状态会保留，无需在程序内再登录。",
             style="Muted.TLabel",
             wraplength=820,
         ).pack(anchor="w", pady=(10, 0))
@@ -264,7 +275,7 @@ class ScraperApp:
         session_box.bind("<<ComboboxSelected>>", lambda _e: self._refresh_session_label())
         self.session_hint = ttk.Label(settings_card, text=SESSION_LABELS[self.session_var.get()], style="Muted.TLabel")
         self.session_hint.pack(anchor="w", pady=(0, 12))
-        ttk.Checkbutton(settings_card, text="重新导入浏览器登录", variable=self.relogin_var).pack(anchor="w")
+        ttk.Checkbutton(settings_card, text="开始前重新验证登录", variable=self.relogin_var).pack(anchor="w")
 
         progress_outer = tk.Frame(middle, bg=COLORS["border"], padx=1, pady=1)
         progress_outer.grid(row=0, column=1, sticky="nsew", padx=(8, 20), pady=5)
@@ -272,15 +283,12 @@ class ScraperApp:
         progress_card.pack(fill="both", expand=True)
         ttk.Label(progress_card, text="采集进度", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 12))
 
-        ttk.Label(progress_card, textvariable=self.daily_var, style="Metric.TLabel").pack(anchor="w")
-        self.daily_bar = ttk.Progressbar(progress_card, maximum=config.DAILY_TARGET, mode="determinate")
-        self.daily_bar.pack(fill="x", pady=(6, 12))
-
         ttk.Label(progress_card, textvariable=self.session_var_text, style="Metric.TLabel").pack(anchor="w")
         self.session_bar = ttk.Progressbar(progress_card, maximum=1, mode="determinate")
         self.session_bar.pack(fill="x", pady=(6, 12))
 
         ttk.Label(progress_card, textvariable=self.current_var, style="Muted.TLabel", wraplength=360).pack(anchor="w")
+        ttk.Label(progress_card, textvariable=self.eta_var, style="Metric.TLabel", wraplength=360).pack(anchor="w", pady=(6, 0))
         ttk.Label(progress_card, textvariable=self.status_var, style="Status.TLabel", wraplength=360).pack(anchor="w", pady=(8, 0))
 
         log_card = self._card(body, "运行日志")
@@ -317,10 +325,10 @@ class ScraperApp:
         self.auth_badge.configure(style=style)
 
     def _refresh_auth_status(self) -> None:
-        if has_saved_auth():
-            self._set_auth_status(True, "已保存登录态（auth.json）")
+        if is_edge_cdp_available():
+            self._set_auth_status(True, "Edge 已连接 · 可直接采集")
         else:
-            self._set_auth_status(False, "未登录 · 请先导入或浏览器内登录")
+            self._set_auth_status(False, "未连接 Edge · 请先启动 Edge 并登录百应")
 
     def _append_log(self, message: str) -> None:
         self.log_box.configure(state="normal")
@@ -329,10 +337,6 @@ class ScraperApp:
         self.log_box.configure(state="disabled")
 
     def _update_progress(self, state: ProgressState) -> None:
-        self.daily_var.set(f"今日进度  {state.daily_done} / {state.daily_target}")
-        self.daily_bar["maximum"] = max(state.daily_target, 1)
-        self.daily_bar["value"] = state.daily_done
-
         total = max(state.session_total, 1)
         self.session_var_text.set(f"本次进度  {state.session_done} / {state.session_total or '?'}")
         self.session_bar["maximum"] = total
@@ -340,6 +344,7 @@ class ScraperApp:
 
         current = state.current_name or "-"
         self.current_var.set(f"当前达人：{current}")
+        self.eta_var.set(state.eta_text or "预估时间：-")
         self.status_var.set(state.status)
         if state.output_path:
             self.last_output_path = state.output_path
@@ -353,78 +358,71 @@ class ScraperApp:
 
         return CallbackProgress(on_update=on_update, on_log=on_log)
 
-    def _make_login_confirm(self):
-        def confirm() -> None:
-            done = threading.Event()
-
-            def ask() -> None:
-                messagebox.showinfo(config.APP_BRAND, "请在打开的浏览器窗口完成百应登录，完成后点击确定。")
-                done.set()
-
-            self.root.after(0, ask)
-            done.wait()
-
-        return confirm
-
-    def import_auth(self) -> None:
+    def connect_edge(self) -> None:
         if self.running or self.login_running:
             return
 
         self.login_running = True
-        self._append_log(f"—— {config.APP_BRAND} · 正在从浏览器导入登录 ——")
+        self._append_log(f"—— {config.APP_BRAND} · 正在连接 Edge ——")
 
         def worker() -> None:
             try:
-                count, name = sync_auth_from_system_browsers(log=lambda m: self.root.after(0, lambda msg=m: self._append_log(msg)))
-                self.root.after(0, lambda: self._set_auth_status(True, f"已从 {name} 导入 {count} 条 Cookie"))
-                self.root.after(0, lambda: self._append_log(f"导入成功：{name}，{count} 条 Cookie"))
+                ensure_edge_cdp_ready(
+                    log=lambda m: self.root.after(0, lambda msg=m: self._append_log(msg)),
+                    auto_restart=True,
+                )
+                self.root.after(0, lambda: self._set_auth_status(True, "Edge 已连接 · 可直接采集"))
+                self.root.after(0, lambda: self._append_log("连接成功：请在 Edge 确认已登录 buyin.jinritemai.com"))
             except Exception as exc:
-                self.root.after(0, lambda: messagebox.showerror(f"{config.APP_BRAND} · 导入失败", str(exc)))
-                self.root.after(0, lambda: self._append_log(f"导入失败: {exc}"))
+                error_message = str(exc)
+                self.root.after(
+                    0,
+                    lambda msg=error_message: messagebox.showerror(f"{config.APP_BRAND} · 连接失败", msg),
+                )
+                self.root.after(0, lambda msg=error_message: self._append_log(f"连接失败: {msg}"))
+                self.root.after(0, lambda: self._refresh_auth_status())
             finally:
                 self.login_running = False
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def browser_login(self) -> None:
+    def check_auth(self) -> None:
         if self.running or self.login_running:
             return
 
         self.login_running = True
-        self._append_log("—— 打开浏览器，请完成登录 ——")
-        confirm_event = threading.Event()
-
-        def confirm() -> None:
-            done = threading.Event()
-
-            def ask() -> None:
-                if messagebox.askokcancel(config.APP_BRAND, "请在浏览器窗口完成 buyin.jinritemai.com 登录，完成后点确定。"):
-                    confirm_event.set()
-                done.set()
-
-            self.root.after(0, ask)
-            done.wait()
+        self._append_log(f"—— {config.APP_BRAND} · 正在检查 Edge 连接 ——")
 
         def worker() -> None:
             session = None
             try:
-                session = launch_session(browser_name="chromium", headless=False, import_browser_auth=False)
+                ensure_edge_cdp_ready(
+                    log=lambda m: self.root.after(0, lambda msg=m: self._append_log(msg)),
+                    auto_restart=True,
+                )
+
+                session = launch_session(
+                    browser_name="edge",
+                    log=lambda m: self.root.after(0, lambda msg=m: self._append_log(msg)),
+                )
                 page = session.context.new_page()
                 page.set_default_timeout(config.ELEMENT_TIMEOUT_MS)
-                manual_login(page, confirm=confirm)
-
-                if not confirm_event.is_set():
-                    raise RuntimeError("已取消登录")
-
-                if not is_logged_in(page):
-                    raise RuntimeError(f"[{config.APP_BRAND}] 登录验证失败，请确认已成功进入百应后台")
-
-                save_auth_state(session.context)
-                self.root.after(0, lambda: self._set_auth_status(True, "浏览器内登录成功"))
-                self.root.after(0, lambda: self._append_log("浏览器内登录成功，登录态已保存"))
+                ok = is_logged_in(page)
+                page.close()
+                if ok:
+                    self.root.after(0, lambda: self._set_auth_status(True, "Edge 已连接且已登录百应"))
+                    self.root.after(0, lambda: self._append_log("检查完成：可直接开始采集"))
+                else:
+                    self.root.after(0, lambda: self._set_auth_status(False, "Edge 已连接 · 请在 Edge 登录百应"))
+                    self.root.after(0, lambda: self._append_log("检查完成：请在 Edge 登录 buyin.jinritemai.com"))
             except Exception as exc:
-                self.root.after(0, lambda: messagebox.showerror(f"{config.APP_BRAND} · 登录失败", str(exc)))
-                self.root.after(0, lambda: self._append_log(f"登录失败: {exc}"))
+                error_message = str(exc)
+                self.root.after(
+                    0,
+                    lambda msg=error_message: messagebox.showerror(f"{config.APP_BRAND} · 检查失败", msg),
+                )
+                self.root.after(0, lambda msg=error_message: self._append_log(f"检查失败: {msg}"))
+                self.root.after(0, lambda: self._refresh_auth_status())
             finally:
                 if session:
                     close_session(session)
@@ -436,9 +434,14 @@ class ScraperApp:
         if self.running or self.login_running:
             return
 
-        if not has_saved_auth():
-            if not messagebox.askyesno(config.APP_BRAND, "尚未保存登录态，是否继续？建议先点「从浏览器导入」或「浏览器内登录」。"):
+        if not is_edge_cdp_available():
+            if not messagebox.askyesno(
+                config.APP_BRAND,
+                "尚未连接 Edge。是否现在连接？\n（会短暂重启 Edge，已登录状态会保留）",
+            ):
                 return
+            self.connect_edge()
+            return
 
         self.running = True
         self.start_btn.configure(state="disabled")
@@ -450,17 +453,17 @@ class ScraperApp:
         args.gui = False
         args.cli = True
         args.headless = False
-        args.browser = "chromium"
+        args.browser = "edge"
 
         progress = self._make_progress()
-        login_confirm = self._make_login_confirm()
 
         def worker() -> None:
             try:
-                exit_code = run_scraper(args, progress=progress, login_confirm=login_confirm)
-                self.root.after(0, lambda: self._on_finished(exit_code))
+                exit_code = run_scraper(args, progress=progress, login_confirm=None)
+                self.root.after(0, lambda code=exit_code: self._on_finished(code))
             except Exception as exc:
-                self.root.after(0, lambda: self._on_finished(1, str(exc)))
+                error_message = str(exc)
+                self.root.after(0, lambda msg=error_message: self._on_finished(1, msg))
 
         self.worker = threading.Thread(target=worker, daemon=True)
         self.worker.start()

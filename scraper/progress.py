@@ -16,6 +16,7 @@ class ProgressState:
     current_name: str = ""
     status: str = "就绪"
     output_path: str = ""
+    eta_text: str = ""
 
 
 class ProgressReporter(Protocol):
@@ -31,6 +32,9 @@ class ConsoleProgress:
     def update(self, state: ProgressState) -> None:
         line = (
             f"[{config.APP_BRAND}] [{state.session}] 今日 {state.daily_done}/{state.daily_target} | "
+            f"本次 {state.session_done}/{state.session_total} | {state.eta_text} | {state.status}"
+            if state.eta_text
+            else f"[{config.APP_BRAND}] [{state.session}] 今日 {state.daily_done}/{state.daily_target} | "
             f"本次 {state.session_done}/{state.session_total} | {state.status}"
         )
         if line != self._last_status:

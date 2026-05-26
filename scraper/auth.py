@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-import configparser
 import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -9,7 +13,10 @@ from typing import Callable
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
 
 import config
-from scraper.browser_cookies import sync_auth_from_system_browsers
+
+WEBDRIVER_HIDE_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+"""
 
 
 @dataclass
@@ -17,6 +24,7 @@ class BrowserSession:
     playwright: Playwright
     browser: Browser
     context: BrowserContext
+    attached: bool = False
 
 
 def ensure_dirs() -> None:
@@ -24,63 +32,128 @@ def ensure_dirs() -> None:
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def find_default_firefox_profile() -> Path | None:
-    app_data = os.environ.get("APPDATA")
-    if not app_data:
-        return None
+def find_system_edge() -> Path:
+    candidates: list[Path] = []
+    for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
+        value = os.environ.get(env_name)
+        if value:
+            candidates.append(Path(value) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
 
-    profiles_ini = Path(app_data) / "Mozilla" / "Firefox" / "profiles.ini"
-    if not profiles_ini.exists():
-        return None
+    for path in candidates:
+        if path.exists():
+            return path
 
-    parser = configparser.RawConfigParser()
-    parser.read(profiles_ini, encoding="utf-8")
-
-    firefox_root = profiles_ini.parent
-    default_path: str | None = None
-
-    for section in parser.sections():
-        if section.startswith("Install") and parser.has_option(section, "Default"):
-            default_path = parser.get(section, "Default")
-            break
-
-    if not default_path:
-        for section in parser.sections():
-            if parser.has_option(section, "Default") and parser.get(section, "Default") == "1":
-                default_path = parser.get(section, "Path", fallback=None)
-                if default_path:
-                    break
-
-    if not default_path:
-        return None
-
-    profile_dir = firefox_root / default_path if not Path(default_path).is_absolute() else Path(default_path)
-    return profile_dir if profile_dir.exists() else None
+    raise RuntimeError(f"[{config.APP_BRAND}] 未找到 Microsoft Edge，请先安装 Edge。")
 
 
-def _resolve_firefox_profile(firefox_profile: str | None) -> Path | None:
-    if firefox_profile:
-        profile_path = Path(firefox_profile).expanduser().resolve()
-        if not profile_path.exists():
-            raise FileNotFoundError(f"Firefox 配置文件目录不存在: {profile_path}")
-        return profile_path
+def _check_cdp_url(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"{url.rstrip('/')}/json/version", timeout=2) as response:
+            return response.status == 200
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
 
-    if config.FIREFOX_PROFILE_DIR:
-        profile_path = Path(config.FIREFOX_PROFILE_DIR).expanduser().resolve()
-        if profile_path.exists():
-            return profile_path
 
-    return find_default_firefox_profile()
+def discover_edge_cdp_urls() -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    for url in (config.EDGE_CDP_URL,):
+        if url not in seen:
+            urls.append(url)
+            seen.add(url)
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        port_file = Path(local_app_data) / "Microsoft" / "Edge" / "User Data" / "DevToolsActivePort"
+        if port_file.exists():
+            try:
+                port = port_file.read_text(encoding="utf-8", errors="ignore").splitlines()[0].strip()
+                if port.isdigit():
+                    dynamic = f"http://127.0.0.1:{port}"
+                    if dynamic not in seen:
+                        urls.append(dynamic)
+                        seen.add(dynamic)
+            except (IndexError, OSError):
+                pass
+
+    return urls
+
+
+def resolve_edge_cdp_url() -> str | None:
+    for url in discover_edge_cdp_urls():
+        if _check_cdp_url(url):
+            return url
+    return None
+
+
+def is_edge_cdp_available() -> bool:
+    return resolve_edge_cdp_url() is not None
 
 
 def has_saved_auth() -> bool:
-    return config.AUTH_STATE_PATH.exists() and config.AUTH_STATE_PATH.stat().st_size > 0
+    return is_edge_cdp_available()
 
 
-def sync_auth_from_firefox(firefox_profile: str | None = None) -> int:
-    count, name = sync_auth_from_system_browsers(firefox_profile)
-    print(f"[{config.APP_BRAND}] 已从 {name} 导入 {count} 条 Cookie 到: {config.AUTH_STATE_PATH}")
-    return count
+def restart_edge_for_cdp(*, log: Callable[[str], None] | None = None) -> None:
+    edge_exe = find_system_edge()
+    if log:
+        log("正在连接您的 Edge（将短暂重启 Edge，已保存的登录状态会保留）...")
+
+    subprocess.run(
+        ["taskkill", "/IM", "msedge.exe", "/F"],
+        capture_output=True,
+        check=False,
+    )
+    time.sleep(1.5)
+
+    subprocess.Popen(
+        [
+            str(edge_exe),
+            f"--remote-debugging-port={config.EDGE_DEBUG_PORT}",
+            config.DAREN_SQUARE_URL,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+
+    for _ in range(40):
+        if resolve_edge_cdp_url():
+            if log:
+                log("Edge 已连接，可直接复用登录态。")
+            return
+        time.sleep(0.25)
+
+    raise RuntimeError(f"[{config.APP_BRAND}] Edge 重启后仍无法连接，请稍后重试。")
+
+
+def ensure_edge_cdp_ready(
+    *,
+    log: Callable[[str], None] | None = None,
+    auto_restart: bool = True,
+) -> str:
+    url = resolve_edge_cdp_url()
+    if url:
+        if log:
+            log("已连接正在运行的 Edge。")
+        return url
+
+    if not auto_restart:
+        raise RuntimeError(
+            f"[{config.APP_BRAND}] 无法连接 Edge。\n"
+            "请点击「连接 Edge」，程序会短暂重启 Edge 并保留您的登录状态。"
+        )
+
+    restart_edge_for_cdp(log=log)
+    url = resolve_edge_cdp_url()
+    if url:
+        return url
+
+    raise RuntimeError(f"[{config.APP_BRAND}] 无法连接 Edge，请稍后重试。")
 
 
 def is_logged_in(page: Page) -> bool:
@@ -106,66 +179,45 @@ def is_logged_in(page: Page) -> bool:
     return True
 
 
-def manual_login(page: Page, confirm: Callable[[], None] | None = None) -> None:
-    page.goto(config.BASE_URL, wait_until="domcontentloaded", timeout=config.PAGE_LOAD_TIMEOUT_MS)
-    if confirm is None:
-        print(f"\n[{config.APP_BRAND}] 请在浏览器窗口中完成登录（支持扫码或账号密码）。")
-        print(f"[{config.APP_BRAND}] 登录成功后，确保能正常进入百应后台，然后回到终端按回车继续...")
-        input()
-    else:
-        confirm()
-
-
 def save_auth_state(context: BrowserContext) -> None:
     ensure_dirs()
     context.storage_state(path=str(config.AUTH_STATE_PATH))
 
 
+def connect_to_edge_cdp(*, log: Callable[[str], None] | None = None) -> BrowserSession:
+    if sys.platform != "win32":
+        raise RuntimeError(f"[{config.APP_BRAND}] 连接已登录 Edge 目前仅支持 Windows。")
+
+    cdp_url = ensure_edge_cdp_ready(log=log, auto_restart=True)
+
+    playwright = sync_playwright().start()
+    browser = playwright.chromium.connect_over_cdp(cdp_url)
+    context = browser.contexts[0] if browser.contexts else browser.new_context()
+    return BrowserSession(playwright, browser, context, attached=True)
+
+
 def launch_session(
     *,
-    browser_name: str = "chromium",
+    browser_name: str = "edge",
     headless: bool = False,
     firefox_profile: str | None = None,
     import_browser_auth: bool = True,
     log: Callable[[str], None] | None = None,
 ) -> BrowserSession:
+    del browser_name, headless, firefox_profile, import_browser_auth
+
     ensure_dirs()
+    if sys.platform == "win32":
+        return connect_to_edge_cdp(log=log)
+
     playwright = sync_playwright().start()
-    browser_name = browser_name.lower()
-
-    if import_browser_auth:
-        try:
-            sync_auth_from_system_browsers(firefox_profile, log=log)
-        except Exception as exc:
-            if not has_saved_auth():
-                if log:
-                    log(f"浏览器 Cookie 导入失败: {exc}")
-            elif log:
-                log(f"浏览器 Cookie 导入跳过（将使用已有 auth.json）: {exc}")
-
-    browser = (
-        playwright.chromium.launch(headless=headless)
-        if browser_name == "chromium"
-        else playwright.firefox.launch(headless=headless)
-    )
-
-    context_kwargs: dict = {
-        "viewport": {"width": 1920, "height": 1080},
-        "user_agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-        ),
-    }
-    if has_saved_auth():
+    browser = playwright.chromium.launch(headless=False)
+    context_kwargs: dict = {"viewport": {"width": 1920, "height": 1080}}
+    if config.AUTH_STATE_PATH.exists() and config.AUTH_STATE_PATH.stat().st_size > 0:
         context_kwargs["storage_state"] = str(config.AUTH_STATE_PATH)
-
     context = browser.new_context(**context_kwargs)
-    context.add_init_script(
-        """
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        """
-    )
-    return BrowserSession(playwright, browser, context)
+    context.add_init_script(WEBDRIVER_HIDE_SCRIPT)
+    return BrowserSession(playwright, browser, context, attached=False)
 
 
 def ensure_authenticated(
@@ -177,59 +229,27 @@ def ensure_authenticated(
     login_confirm: Callable[[], None] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> None:
-    if force_relogin and import_browser_auth:
-        try:
-            sync_auth_from_system_browsers(firefox_profile, log=log)
-        except Exception as exc:
-            if log:
-                log(f"重新导入 Cookie 失败: {exc}")
+    del force_relogin, firefox_profile, import_browser_auth, login_confirm
 
     page = session.context.new_page()
     page.set_default_timeout(config.ELEMENT_TIMEOUT_MS)
 
     try:
-        if force_relogin or not has_saved_auth() or not is_logged_in(page):
-            if has_saved_auth() and not force_relogin and import_browser_auth:
-                if log:
-                    log("当前登录态无效，尝试从 Chrome / Edge / Firefox 重新导入...")
-                try:
-                    sync_auth_from_system_browsers(firefox_profile, log=log)
-                    session.context.close()
-                    context_kwargs = {
-                        "viewport": {"width": 1920, "height": 1080},
-                        "user_agent": (
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                            "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-                        ),
-                        "storage_state": str(config.AUTH_STATE_PATH),
-                    }
-                    session.context = session.browser.new_context(**context_kwargs)
-                    session.context.add_init_script(
-                        """
-                        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                        """
-                    )
-                    page = session.context.new_page()
-                    page.set_default_timeout(config.ELEMENT_TIMEOUT_MS)
-                    if is_logged_in(page):
-                        if log:
-                            log("重新导入浏览器 Cookie 后登录成功。")
-                        return
-                except Exception as exc:
-                    if log:
-                        log(f"重新导入失败: {exc}")
-
-            manual_login(page, confirm=login_confirm)
-            if not is_logged_in(page):
-                raise RuntimeError(f"[{config.APP_BRAND}] 登录失败，请确认已在浏览器中登录 buyin.jinritemai.com。")
-            save_auth_state(session.context)
-            if log:
-                log("登录成功，登录态已保存。")
+        if not is_logged_in(page):
+            raise RuntimeError(
+                f"[{config.APP_BRAND}] Edge 中尚未登录百应（buyin.jinritemai.com）。\n"
+                "注意：抖店（fxg.jinritemai.com）与百应不是同一系统。\n"
+                "请在 Edge 打开 buyin.jinritemai.com 完成登录后，再点「开始采集」。"
+            )
+        if log:
+            log("已确认 Edge 百应登录态有效。")
     finally:
         page.close()
 
 
 def close_session(session: BrowserSession) -> None:
-    session.context.close()
-    session.browser.close()
+    try:
+        session.browser.close()
+    except Exception:
+        pass
     session.playwright.stop()

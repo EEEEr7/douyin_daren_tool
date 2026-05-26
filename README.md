@@ -62,11 +62,9 @@ python create_desktop_shortcut.py
 
 ## 登录说明
 
-1. 在 Chrome 或 Edge 登录 [buyin.jinritemai.com](https://buyin.jinritemai.com)
-2. 打开 XTeink 界面，点击「从浏览器导入」
+1. 在 **Edge** 登录 [buyin.jinritemai.com](https://buyin.jinritemai.com)
+2. **完全关闭 Edge** 后，打开 XTeink 界面，点击「从 Edge 导入」
 3. 或使用「浏览器内登录」直接扫码/账号登录
-
-也支持从 Firefox 导入 Cookie（可选）。
 
 ## 稳妥策略说明
 
@@ -94,13 +92,13 @@ python create_desktop_shortcut.py
 |------|------|
 | `--session morning/noon/evening/auto` | 运行时段 |
 | `--limit N` | 覆盖本次上限 |
-| `--relogin` | 从浏览器重新导入 Cookie |
+| `--relogin` | 从 Edge 重新导入 Cookie |
 | `--aggressive` | 快速模式（短延迟、无配额，不推荐） |
 | `--firefox-profile PATH` | 指定 Firefox 配置（可选） |
 
 ## 注意事项
 
-- 登录 Cookie 可从 Chrome / Edge / Firefox 导入，采集使用 Chromium
+- 登录 Cookie 从 **Edge** 导入，采集使用内置 Chromium
 - 批量查看联系方式仍有平台风控风险，请控制频率
 - `data/` 含登录态与抓取记录，请勿泄露
 
