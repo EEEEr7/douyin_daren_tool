@@ -1,6 +1,6 @@
 # XTeink · 达人微信号采集
 
-**XTeink** 出品 · **© 2026 阅星曈 v1.1.0**
+**XTeink** 出品 · **© 2026 阅星曈 v1.2.0**
 
 从 [精选联盟达人广场](https://buyin.jinritemai.com/dashboard/servicehall/daren-square) 筛选「3C数码家电 + 有联系方式」的达人，获取微信号并导出 Excel。
 

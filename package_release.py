@@ -12,7 +12,7 @@ import config
 ROOT = Path(__file__).resolve().parent
 RELEASE_ROOT = ROOT / "release"
 PACKAGE_DIR = RELEASE_ROOT / "XTeink_达人微信采集"
-ZIP_PATH = RELEASE_ROOT / "XTeink_达人微信采集_v1.1.0.zip"
+ZIP_PATH = RELEASE_ROOT / f"XTeink_达人微信采集_{config.APP_VERSION}.zip"
 TEMPLATE = ROOT / "release_template"
 PLAYWRIGHT_SRC = Path.home() / "AppData" / "Local" / "ms-playwright"
 
@@ -81,13 +81,19 @@ def package() -> Path:
 
     print("[打包] 使用系统 Edge，无需复制 Chromium（体积更小）...")
 
-    print("[打包] 压缩 zip...")
+    print("[打包] 压缩 zip（UTF-8 文件名，避免中文乱码）...")
     if ZIP_PATH.exists():
         ZIP_PATH.unlink()
 
     with zipfile.ZipFile(ZIP_PATH, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
         for path in PACKAGE_DIR.rglob("*"):
-            zf.write(path, path.relative_to(RELEASE_ROOT))
+            if not path.is_file():
+                continue
+            arcname = path.relative_to(RELEASE_ROOT).as_posix()
+            info = zipfile.ZipInfo(arcname)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.flag_bits |= 0x800
+            zf.writestr(info, path.read_bytes())
 
     size_mb = ZIP_PATH.stat().st_size / 1024 / 1024
     print(f"[完成] 文件夹: {PACKAGE_DIR}")

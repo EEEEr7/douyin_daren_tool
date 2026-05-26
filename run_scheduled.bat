@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title XTeink · 定时采集 v1.1.0
+title XTeink · 定时采集 v1.2.0
 cd /d "%~dp0"
 
 set hour=%time:~0,2%

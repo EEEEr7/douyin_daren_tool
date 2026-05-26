@@ -17,7 +17,7 @@ python package_release.py
 if errorlevel 1 goto :fail
 
 echo.
-echo 完成。请将 release\XTeink_达人微信采集_v1.1.0.zip 发给同事。
+echo 完成。请将 release\XTeink_达人微信采集_v1.2.0.zip 发给同事。
 pause
 exit /b 0
 

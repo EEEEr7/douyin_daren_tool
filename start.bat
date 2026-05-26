@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title XTeink · 达人微信号采集 v1.1.0
+title XTeink · 达人微信号采集 v1.2.0
 cd /d "%~dp0"
 if exist "main.py" (
   python main.py

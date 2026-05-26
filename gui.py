@@ -30,7 +30,7 @@ ASSETS_DIR = config.ASSETS_DIR
 APP_ICON_ICO = ASSETS_DIR / "app_icon.ico"
 APP_ICON_PNG = ASSETS_DIR / "app_icon_512.png"
 APP_LOGO = ASSETS_DIR / "app_icon.png"
-APP_ID = "xteink.daren.tool.v1.1.0.opaque"
+APP_ID = "xteink.daren.tool.v1.2.0.opaque"
 
 COLORS = {
     "bg": "#f4f6f8",
