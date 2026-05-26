@@ -1,0 +1,16 @@
+data/auth.json
+data/processed_uids.json
+data/daily_stats.json
+output/
+release/
+*.zip
+build/
+dist/
+XTeink 抖音达人微信采集.exe
+XTeink.exe
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.pytest_cache/
